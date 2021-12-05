@@ -47,7 +47,7 @@ def part2(numbers_called, boards):
     return score(boards[board_ndx], n)
 
 def main():
-    regular_input = __file__.split('/')[-1].removesuffix('.py') + '.in'
+    regular_input = __file__.split('/')[-1][:-len('.py')] + '.in'
     file = regular_input if len(sys.argv) <= 1 else sys.argv[1]
     print(f'using input: {file}')
     with open(file) as f:
