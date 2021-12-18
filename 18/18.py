@@ -3,62 +3,58 @@
 # https://adventofcode.com/2021/day/18 - "snailfish"
 # Author: Greg Hamerly
 
+# One thing that could make this faster is caching the status of whether each
+# node contains a descendant that should explode or split, and only descending
+# into those branches where this is known to be true (or, avoiding descending
+# branches where it's known to be false). But I've worked enough on this
+# problem.
+
 import sys
 import json
 
 class Tree:
     def __init__(self, left, right):
-        self.left = left
-        self.right = right
+        self.children = [left, right]
 
     def copy(self):
-        left = self.left.copy() if self.left else None
-        right = self.right.copy() if self.right else None
-        return Tree(left, right)
+        children = [c.copy() if c else None for c in self.children]
+        return Tree(*children)
 
-    def add(self, right):
-        '''Join this tree as a left child with another to its right.'''
-        return Tree(self, right)
-
-    def _str(self, depth):
+    def __repr__(self, depth=0):
         '''Display the tree in a way that highlights those pairs that should
         explode.'''
         a = '[' if depth < 4 else '('
         b = ']' if depth < 4 else ')'
-        return f'{a}{self.left._str(depth+1)},{self.right._str(depth+1)}{b}'
-
-    def __repr__(self):
-        return self._str(0)
+        c0, c1 = self.children
+        return f'{a}{c0.__repr__(depth+1)},{c1.__repr__(depth+1)}{b}'
 
     def magnitude(self):
         '''Find the "magnitude" -- a checksum defined by the problem -- for this
         tree.'''
-        return 3 * self.left.magnitude() + 2 * self.right.magnitude()
-            
+        return 3 * self.children[0].magnitude() + 2 * self.children[1].magnitude()
+
     def explode(self):
         '''Explode the given pair, return a dictionary indicating what should
-        replace, go left, and go right.'''
-        assert isinstance(self.left, TreeLeaf)
-        assert isinstance(self.right, TreeLeaf)
-        return 'explode', {'replacement': TreeLeaf(0),
-                           'left': self.left.val,
-                           'right': self.right.val}
+        replace, go left, and go right. Add 'done', which is never removed, so
+        that the dictionary is never empty (and always evaluates to True).'''
+        assert all(isinstance(c, TreeLeaf) for c in self.children)
+        return {'replace': TreeLeaf(0),
+                0: self.children[0].val,
+                1: self.children[1].val,
+                'done': True}
 
     def should_split(self):
         '''Trees that have children should never split.'''
         return False
-    def should_explode(self, depth):
 
+    def should_explode(self, depth):
         '''Trees that are deep enough should explode.'''
         return depth >= 4
 
-    def add_leftmost(self, x):
-        '''Find the leftmost node, add x to it.'''
-        self.left.add_leftmost(x)
-
-    def add_rightmost(self, x):
-        '''Find the rightmost node, add x to it.'''
-        self.right.add_rightmost(x)
+    def add_to_extreme_leaf(self, direction, value):
+        '''Move as far as possible in "direction" (which is either 0 or 1), and
+        add the given value to that leaf.'''
+        self.children[direction].add_to_extreme_leaf(direction, value)
 
     def reduce_explode(self, depth=0):
         '''Reduce through exploding. Return something that evaluates to True or
@@ -67,41 +63,21 @@ class Tree:
         if self.should_explode(depth):
             return self.explode()
 
-        if self.left:
-            result = self.left.reduce_explode(depth + 1)
-            if result:
-                if result[0] == 'explode':
-                    d = result[1]
-                    if 'replacement' in d:
-                        self.left = d['replacement']
-                        del d['replacement']
-                    if 'right' in d:
-                        self.right.add_leftmost(d['right'])
-                        del d['right']
+        # look left, then right
+        for node, sibling in [(0, 1), (1, 0)]:
+            if self.children[node] is None:
+                continue
 
-                    if d:
-                        # there's still more to process up the chain
-                        return 'explode', d
+            result = self.children[node].reduce_explode(depth + 1)
+            if isinstance(result, dict):
+                if 'replace' in result:
+                    self.children[node] = result['replace']
+                    del result['replace']
+                if sibling in result:
+                    self.children[sibling].add_to_extreme_leaf(node, result[sibling])
+                    del result[sibling]
 
-                return 'done', True
-
-        if self.right:
-            result = self.right.reduce_explode(depth + 1)
-            if result:
-                if result[0] == 'explode':
-                    d = result[1]
-                    if 'replacement' in d:
-                        self.right = d['replacement']
-                        del d['replacement']
-                    if 'left' in d:
-                        self.left.add_rightmost(d['left'])
-                        del d['left']
-
-                    if d:
-                        # there's still more to process up the chain
-                        return 'explode', d
-
-                return 'done', True
+                return result
 
         return False
 
@@ -112,23 +88,18 @@ class Tree:
         if self.should_split():
             return self.split()
 
-        if self.left:
-            result = self.left.reduce_split()
-            if result:
-                if result[0] == 'split':
-                    self.left = result[1]
-                return 'done', True
-
-        if self.right:
-            result = self.right.reduce_split()
-            if result:
-                if result[0] == 'split':
-                    self.right = result[1]
-                return 'done', True
+        for node in range(2):
+            if self.children[node]:
+                result = self.children[node].reduce_split()
+                if isinstance(result, dict):
+                    if 'split' in result:
+                        self.children[node] = result['split']
+                        del result['split']
+                    return result
 
         return False
 
-    def reduce(self):
+    def _reduce(self):
         '''Reduce by exploding first, then splitting (in that priority
         order). My major mistake in my first implementation was taking the
         priority as the leftmost action available, and not prioritizing explodes
@@ -138,75 +109,72 @@ class Tree:
             return r
         return self.reduce_split()
 
+    def reduce(self):
+        '''Reduce until no further reduction can be done.'''
+        while self._reduce():
+            pass
+        return self
+
 class TreeLeaf(Tree):
     '''Special sub-class to represent leaf node values.'''
     def __init__(self, val):
-        self.left = self.right = None
+        super().__init__(None, None)
         self.val = val
 
     def copy(self): return TreeLeaf(self.val)
     def should_explode(self, depth): return False
-    def add_leftmost(self, x): self.val += x
-    def add_rightmost(self, x): self.val += x
+    def add_to_extreme_leaf(self, direction, value): self.val += value
     def should_split(self): return self.val >= 10
 
     def split(self):
-        vDiv2 = self.val // 2
-        r = Tree(TreeLeaf(vDiv2), TreeLeaf(self.val - vDiv2))
-        return 'split', r
+        '''Split this leaf into a Tree with two leaves, according to the rules
+        of the problem. Add 'done', which is never removed, so that the
+        dictionary is never empty (and always evaluates to True).'''
+        a = TreeLeaf(self.val // 2)
+        b = TreeLeaf((self.val + 1) // 2)
+        return {'split': Tree(a, b), 'done': True}
 
     def magnitude(self): return self.val
-    def _str(self, depth): return str(self.val)
-    def __repr__(self): return str(self.val)
+    def __repr__(self, depth=0):
+        '''Highlight leaves whose values should be split.'''
+        h = '*' if self.val >= 10 else ''
+        return f'{h}{self.val}{h}'
 
-def build_tree(x, depth=0):
+def build(x, depth=0):
     '''Build a tree from a nested list.'''
     if isinstance(x, int):
         return TreeLeaf(x)
     assert len(x) == 2
     assert depth <= 3
-    left = build_tree(x[0], depth+1)
-    right = build_tree(x[1], depth+1)
-    return Tree(left, right)
+    return Tree(build(x[0], depth+1), build(x[1], depth+1))
 
-def parse(line):
+def parse(lines):
     '''Parse the nested list using the JSON library, then recursively build the
     tree.'''
-    return build_tree(json.loads(line))
+    return [build(json.loads(l)) for l in lines]
 
 def part1(lines):
     '''Add all the numbers together (in order), continually reducing each
     result. Return the magnitude (a sort of checksum defined in the problem).'''
-    t = parse(lines[0])
-    for line in lines[1:]:
-        t2 = parse(line)
-        t = t.add(t2)
-        while t.reduce():
-            pass
+    trees = parse(lines)
+    t = trees[0]
+    for t2 in trees[1:]:
+        t = Tree(t, t2).reduce()
     return t.magnitude()
 
 def part2(lines):
     '''Try adding each pair of trees (in both orders: a+b, b+a), and reduce each
     result. Then find the magnitude. Return the maximum magnitude over all
     pairs.'''
-    trees = list(map(parse, lines))
-    max_magnitude = 0
-    for i in range(len(trees)):
-        for j in range(len(trees)):
-            if i == j:
-                continue
+    trees = parse(lines)
+    magnitudes = []
+    for i, ti in enumerate(trees):
+        for j, tj in enumerate(trees):
+            if i != j:
+                # make copies, because the reduction process is destructive
+                magnitudes.append(Tree(ti.copy(), tj.copy()).reduce().magnitude())
 
-            # make copies, because the reduction process is destructive
-            ti = trees[i].copy()
-            tj = trees[j].copy()
-            t = ti.add(tj)
-
-            while t.reduce():
-                pass
-
-            max_magnitude = max(max_magnitude, t.magnitude())
-
-    return max_magnitude
+    return max(magnitudes)
 
 def main():
     regular_input = __file__.split('/')[-1][:-len('.py')] + '.in'
